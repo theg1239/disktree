@@ -14,14 +14,19 @@ env:
 
 jobs:
   check:
-    name: Lint and test
-    runs-on: ubuntu-24.04
+    name: Lint and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
       # What GPUI links against: windowing (Wayland, X11), input, fonts,
       # and the Vulkan loader.
       - name: System libraries
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -33,7 +38,7 @@ jobs:
       # clippy's new lints are a change to make on purpose, not by surprise.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.97"
+          toolchain: "1.97.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -43,3 +48,17 @@ jobs:
 
       - name: Test
         run: cargo xtask test
+
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
+        run: |
+          make bundle
+          ditto -c -k --sequesterRsrc --keepParent target/release/Disktree.app target/release/Disktree-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: Disktree-macOS
+          path: target/release/Disktree-macOS.zip

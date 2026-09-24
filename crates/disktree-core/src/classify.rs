@@ -122,9 +122,11 @@ pub fn category_of_name(name: &str) -> Option<Category> {
         | ".espressif" | ".arduino15" | ".config" | ".vscode" | ".zig"
         | ".rye" | ".conda" | "anaconda3" | "miniconda3" | ".opam"
         | ".ghcup" | ".stack" | ".julia" | ".dotnet" | ".android"
-        | ".sdkman" | ".volta" | ".yarn" | ".java" => Category::Toolchain,
+        | ".sdkman" | ".volta" | ".yarn" | ".java" | ".swiftpm" | "xcode"
+        | "homebrew" => Category::Toolchain,
         "sync" | "dropbox" | "nextcloud" | "google drive" | "onedrive"
-        | "pclouddrive" | "mega" | ".stversions" => Category::Synced,
+        | "pclouddrive" | "mega" | ".stversions" | "mobile documents"
+        | "cloudstorage" => Category::Synced,
         ".git" => Category::Git,
         "pictures" | "photos" | "music" | "videos" | "movies" | "steam"
         | "models" | ".ollama" | ".lmstudio" | "games" | "wineprefix" => {
@@ -152,6 +154,7 @@ pub fn reclaim_of(
         ".cache" | "cache" | "caches" | ".ccache" | ".sccache" | "_cacache" => {
             Reclaim::Regenerable
         }
+        "deriveddata" if parent == Category::Toolchain => Reclaim::BuildOutput,
         ".stversions" => Reclaim::SyncHistory,
         ".pnpm-store" | "pnpm" => Reclaim::PackageStore,
         "__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
@@ -169,6 +172,40 @@ pub fn reclaim_of(
     Some(reclaim)
 }
 
+/// Reclaim rules ask about only these manifests. Remember their presence
+/// once per directory instead of copying every filename and repeatedly
+/// searching it for each child.
+#[derive(Clone, Copy, Debug)]
+struct Manifests {
+    cargo: bool,
+    npm: bool,
+}
+
+impl Manifests {
+    fn in_dir(children: &[Node]) -> Self {
+        let mut result = Self {
+            cargo: false,
+            npm: false,
+        };
+        for child in children {
+            match child.name.as_ref() {
+                "Cargo.toml" => result.cargo = true,
+                "package.json" => result.npm = true,
+                _ => {}
+            }
+        }
+        result
+    }
+
+    fn contains(self, name: &str) -> bool {
+        match name {
+            "Cargo.toml" => self.cargo,
+            "package.json" => self.npm,
+            _ => false,
+        }
+    }
+}
+
 /// Assign a category and a reclaim reason to every node beneath `root`.
 ///
 /// Top-down: a node's own name wins, otherwise it inherits. Reclaimable
@@ -176,14 +213,9 @@ pub fn reclaim_of(
 pub fn classify(root: &mut Node) {
     root.category = Category::Other;
     root.reclaim = None;
-    let children = std::mem::take(&mut root.children);
-    let names: Vec<Box<str>> =
-        children.iter().map(|child| child.name.clone()).collect();
-    root.children = children;
-    for index in 0..root.children.len() {
-        let has_sibling =
-            |wanted: &str| names.iter().any(|name| &**name == wanted);
-        let child = &mut root.children[index];
+    let manifests = Manifests::in_dir(&root.children);
+    for child in &mut root.children {
+        let has_sibling = |wanted: &str| manifests.contains(wanted);
         // A top-level directory with an unknown name takes the kind of its
         // largest recognisable child: `~/world` is mostly `.git`.
         let category = category_of_name(&child.name)
@@ -208,14 +240,9 @@ fn classify_below(
     if node.children.is_empty() {
         return;
     }
-    let names: Vec<Box<str>> = node
-        .children
-        .iter()
-        .map(|child| child.name.clone())
-        .collect();
+    let manifests = Manifests::in_dir(&node.children);
     for child in &mut node.children {
-        let has_sibling =
-            |wanted: &str| names.iter().any(|name| &**name == wanted);
+        let has_sibling = |wanted: &str| manifests.contains(wanted);
         let child_category = if child.is_dir() {
             category_of_name(&child.name)
                 .or_else(|| is_git_store(child).then_some(Category::Git))
@@ -423,6 +450,24 @@ mod tests {
             reclaim_of("snapshots", Category::Documents, |_| false),
             None
         );
+    }
+
+    #[test]
+    fn macos_developer_caches_and_cloud_data_are_distinguished() {
+        assert_eq!(category_of_name("Xcode"), Some(Category::Toolchain));
+        assert_eq!(
+            reclaim_of("DerivedData", Category::Toolchain, |_| false),
+            Some(Reclaim::BuildOutput)
+        );
+        assert_eq!(
+            reclaim_of("Archives", Category::Toolchain, |_| false),
+            None
+        );
+        assert_eq!(
+            category_of_name("Mobile Documents"),
+            Some(Category::Synced)
+        );
+        assert_eq!(category_of_name("CloudStorage"), Some(Category::Synced));
     }
 
     #[test]

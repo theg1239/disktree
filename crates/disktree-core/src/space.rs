@@ -69,6 +69,7 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
 /// The device a path's filesystem is mounted from, such as
 /// `/dev/nvme0n1p2`: the mount with the longest prefix of `path` in
 /// `/proc/self/mounts`. `None` where that table cannot be read.
+#[cfg(not(target_os = "macos"))]
 pub fn device_for(path: &Path) -> Option<String> {
     let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -186,6 +187,7 @@ pub fn volume_root(mounts: &[Mount], path: &Path) -> Option<PathBuf> {
 }
 
 /// [`volume_root`] for this machine.
+#[cfg(not(target_os = "macos"))]
 pub fn volume_root_for(path: &Path) -> Option<PathBuf> {
     let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -194,9 +196,46 @@ pub fn volume_root_for(path: &Path) -> Option<PathBuf> {
 
 /// [`foreign_mounts`] for this machine; `None` when the mount table cannot
 /// be read, so the caller can fall back to comparing devices.
+#[cfg(not(target_os = "macos"))]
 pub fn foreign_mounts_for(root: &Path) -> Option<Vec<PathBuf>> {
     let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
     Some(foreign_mounts(&parse_mounts(&table), root))
+}
+
+/// Native macOS device lookup, including APFS firmlinks.
+#[cfg(target_os = "macos")]
+pub fn device_for(path: &Path) -> Option<String> {
+    crate::macos::device(path)
+}
+
+/// On macOS the writable Data volume is the root for a home disk scan.
+#[cfg(target_os = "macos")]
+pub fn volume_root_for(path: &Path) -> Option<PathBuf> {
+    crate::macos::volume_root(path)
+}
+
+/// Exclude mounted disks through both visible and APFS Data paths.
+#[cfg(target_os = "macos")]
+pub fn foreign_mounts_for(root: &Path) -> Option<Vec<PathBuf>> {
+    crate::macos::foreign_mounts(root)
+}
+
+/// A directory removal must not recurse into a nested mounted filesystem.
+/// This preflight runs only on removal workers, never during frame rendering.
+pub fn mounts_below(root: &Path) -> io::Result<bool> {
+    let root = root.canonicalize()?;
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::mounts_below(&root)
+            .ok_or_else(|| io::Error::other("cannot verify mounted volumes"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let table = std::fs::read_to_string("/proc/self/mounts")?;
+        Ok(parse_mounts(&table)
+            .iter()
+            .any(|mount| mount.point != root && mount.point.starts_with(&root)))
+    }
 }
 
 #[cfg(test)]

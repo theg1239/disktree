@@ -15,5 +15,12 @@ rayon = { workspace = true }
 rustix = { version = "1.1", features = ["fs"] }
 rustc-hash = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "NSError", "NSFileManager", "NSString", "NSURL",
+] }
+
 [dev-dependencies]
 tempfile = "3"

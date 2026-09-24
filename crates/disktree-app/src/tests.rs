@@ -1101,3 +1101,98 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
 fn names_at(names: &[String], index: usize) -> String {
     names.get(index).cloned().unwrap_or_default()
 }
+
+#[gpui_kit::test]
+fn zoomed_frames_only_prepare_visible_tiles(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    update(&view, cx, |app, _| {
+        let all = app.prepare().tiles.len();
+        let viewport = app.treemap_size.get();
+        app.view.scale = 4.0;
+        let mosaic = app.prepare();
+        assert!(mosaic.tiles.len() < all);
+        for tile in &mosaic.tiles {
+            let rect = mosaic.view.project(tile.rect);
+            assert!(rect.x < viewport.width.as_f32());
+            assert!(rect.y < viewport.height.as_f32());
+            assert!(rect.right() > 0.0 && rect.bottom() > 0.0);
+        }
+        app.view = crate::state::View::default();
+        assert_eq!(app.prepare().tiles.len(), all);
+    });
+}
+
+#[gpui_kit::test]
+fn command_keys_do_not_type_into_search_or_change_review_mode(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "/");
+    press(cx, "cmd-p");
+    assert!(read(&view, cx, |app| app.find.is_empty()));
+    press(cx, "escape");
+    press(cx, "space");
+    press(cx, "c");
+    let mode = read(&view, cx, |app| app.removal_mode);
+    press(cx, "cmd-p");
+    assert_eq!(read(&view, cx, |app| app.removal_mode), mode);
+}
+
+#[gpui_kit::test]
+fn footer_fields_stay_put_across_digits_units_zoom_and_completion(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.scan = Some(disktree_core::scan::ScanHandle::spawn(
+            temp.path().into(),
+            options(),
+        ));
+    });
+    draw(cx);
+    let selectors = ["footer-help", "scan-status", "scan-count", "scan-detail"];
+    let original: Vec<_> = selectors
+        .iter()
+        .map(|selector| cx.debug_bounds(selector).unwrap())
+        .collect();
+    for (files, bytes, zoom) in [
+        (9, 900, 1.0),
+        (999, 999_999, 2.5),
+        (2_300_000, 169 * 1024 * 1024 * 1024, 1.0),
+        (u64::MAX, u64::MAX, 99.0),
+    ] {
+        update(&view, cx, |app, _| {
+            app.progress.files = files;
+            app.progress.bytes = bytes;
+            app.view.scale = zoom;
+        });
+        draw(cx);
+        for (selector, expected) in selectors.iter().zip(&original) {
+            assert_eq!(
+                &cx.debug_bounds(selector).unwrap(),
+                expected,
+                "{selector} moved"
+            );
+        }
+    }
+    update(&view, cx, |app, _| {
+        app.scan = None;
+        app.scan_elapsed = Some(std::time::Duration::from_secs(1234));
+    });
+    draw(cx);
+    for (selector, expected) in selectors.iter().zip(&original) {
+        assert_eq!(
+            &cx.debug_bounds(selector).unwrap(),
+            expected,
+            "{selector} moved after completion"
+        );
+    }
+}

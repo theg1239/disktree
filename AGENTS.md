@@ -1,6 +1,6 @@
 # disktree — agent guide
 
-A GPUI + gpui-omarchy treemap explorer for disk usage on Omarchy. Read
+A Rust + GPUI Kit + gpui-omarchy treemap explorer for disk usage on macOS and Omarchy. Read
 `README.md` for the product; this file is the working contract.
 
 ## What this is
@@ -15,6 +15,7 @@ the removal mode, the confirmation). Marking is never destructive.
 ```sh
 make build                      # release build
 make run                        # build and run, scanning $HOME
+make bundle                     # macOS release .app bundle
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
@@ -24,7 +25,9 @@ make ci                         # lint, then test
 make fmt                        # format in place
 ```
 
-`make install` is the supported way to put this on a machine: it installs the
+`make install` installs `~/Applications/Disktree.app` on macOS. The bundle
+is produced with `packaging/macos/bundle.sh`; keep Finder Trash and APFS
+volume handling in `crates/disktree-core/src/macos.rs`. On Linux, it installs the
 release binary, `packaging/disktree.desktop.in` (rendered with the real install
 prefix and the crate version) and `assets/disktree.svg`. Keep the desktop
 entry's `Categories` to a single main category plus additional ones, or
@@ -54,7 +57,7 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 ## Invariants
 
 1. **Sizes come from `st_blocks * 512` unless apparent size was asked for.**
-   That is the number that comes back when a file is deleted.
+   APFS shared blocks and snapshots mean actual reclamation can differ.
 2. **`own_bytes`/`own_files` are derived, never tracked.** `tree::aggregate`
    computes the totals from the children. Hardlink de-duplication rewrites a
    leaf's weight and re-aggregates; anything that patches `bytes` directly will
@@ -83,7 +86,7 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 
 | change | where |
 | --- | --- |
-| measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs` |
+| measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs`, `macos_scan.rs` |
 | what a node is, or a derived total | `crates/disktree-core/src/tree.rs` |
 | tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
 | anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |

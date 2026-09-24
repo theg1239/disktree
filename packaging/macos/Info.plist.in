@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleName</key><string>Disktree</string>
+    <key>CFBundleDisplayName</key><string>Disktree</string>
+    <key>CFBundleIdentifier</key><string>com.theg1239.disktree</string>
+    <key>CFBundleExecutable</key><string>disktree</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+    <key>CFBundleVersion</key><string>@VERSION@</string>
+    <key>CFBundleIconFile</key><string>disktree.icns</string>
+    <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Disktree measures file sizes in folders you choose to scan.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Disktree measures file sizes in folders you choose to scan.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Disktree measures file sizes in folders you choose to scan.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Disktree measures external volumes you choose to scan.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Disktree measures network folders only when you include them.</string>
+</dict></plist>

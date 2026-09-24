@@ -69,6 +69,11 @@ pub mod icon {
 pub mod size {
     use super::Rems;
 
+    /// Stable footer fields, including space for the largest compact values.
+    pub const SCAN_LABEL: Rems = Rems(3.125);
+    pub const SCAN_COUNT: Rems = Rems(5.5);
+    pub const SCAN_DETAIL: Rems = Rems(4.5);
+    pub const ZOOM_STATUS: Rems = Rems(2.25);
     /// A crumb's sibling menu.
     pub const SIBLING_MENU: Rems = Rems(24.0);
     pub const SIBLING_MENU_HEIGHT: Rems = Rems(32.0);

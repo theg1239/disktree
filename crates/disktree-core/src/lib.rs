@@ -8,6 +8,10 @@
 pub mod classify;
 pub mod filter;
 pub mod insights;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod macos_scan;
 pub mod removal;
 pub mod scan;
 pub mod size;

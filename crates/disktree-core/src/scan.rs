@@ -103,17 +103,18 @@ pub struct ScanSnapshot {
 }
 
 impl ScanProgress {
-    fn count_file(&self, bytes: u64) {
-        self.files.fetch_add(1, Ordering::Relaxed);
+    fn add(&self, files: u64, dirs: u64, bytes: u64) {
+        self.files.fetch_add(files, Ordering::Relaxed);
+        self.dirs.fetch_add(dirs, Ordering::Relaxed);
         self.bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    fn count_dir(&self) {
-        self.dirs.fetch_add(1, Ordering::Relaxed);
-    }
-
     fn record_error(&self, path: &Path, error: &io::Error) {
-        self.errors.fetch_add(1, Ordering::Relaxed);
+        if self.errors.fetch_add(1, Ordering::Relaxed)
+            >= MAX_ERROR_DETAIL as u64
+        {
+            return;
+        }
         let message = format!("{}: {error}", path.display());
         let mut messages = lock(&self.messages);
         if messages.len() < MAX_ERROR_DETAIL {
@@ -297,49 +298,129 @@ impl WalkContext {
         }
 
         if file_type.is_dir() {
-            // Memoized: the subtree a narrower scan already measured is
-            // taken whole, before any volume rule, since it was measured
-            // under the same rules.
-            if let Some(known) = &self.known
-                && known.path == path
-            {
-                let tree = (*known.tree).clone();
-                self.progress.files.fetch_add(tree.files, Ordering::Relaxed);
-                self.progress.bytes.fetch_add(tree.bytes, Ordering::Relaxed);
-                self.progress.dirs.fetch_add(tree.dirs, Ordering::Relaxed);
-                let mut tree = tree;
-                tree.name = name;
-                return Classified::Entry(tree);
-            }
-            if self.options.one_filesystem
-                && let Some(foreign) = self.foreign_mounts.get()
-            {
-                // Checked by path before anything reads the directory, so an
-                // automount point is never triggered.
-                if foreign.contains(&path) {
-                    return Classified::Skipped;
-                }
-            } else if self.options.one_filesystem {
-                let device = entry.metadata().map(|meta| device_of(&meta));
-                match (device, self.root_device(&path)) {
-                    (Ok(device), Some(root_device))
-                        if device != root_device =>
-                    {
-                        return Classified::Skipped;
-                    }
-                    (Err(error), _) => {
-                        self.progress.record_error(&path, &error);
-                        return Classified::Skipped;
-                    }
-                    _ => {}
-                }
-            }
-            self.progress.count_dir();
-            return Classified::Subdirectory(path);
+            return self.classify_directory(path, name);
         }
 
         match entry.metadata() {
             Ok(meta) => self.leaf(name, kind_of(&meta, file_type), &meta),
+            Err(error) => {
+                self.progress.record_error(&path, &error);
+                Classified::Skipped
+            }
+        }
+    }
+
+    fn classify_directory(&self, path: PathBuf, name: Box<str>) -> Classified {
+        // Memoized: the subtree a narrower scan already measured is
+        // taken whole, before any volume rule, since it was measured
+        // under the same rules.
+        if let Some(known) = &self.known
+            && known.path == path
+        {
+            let tree = (*known.tree).clone();
+            let mut tree = tree;
+            tree.name = name;
+            return Classified::Entry(tree);
+        }
+        if self.options.one_filesystem
+            && let Some(foreign) = self.foreign_mounts.get()
+        {
+            // Checked by path before anything reads the directory, so an
+            // automount point is never triggered.
+            if foreign.contains(&path) {
+                return Classified::Skipped;
+            }
+        } else if self.options.one_filesystem {
+            let device = fs::metadata(&path).map(|meta| device_of(&meta));
+            match (device, self.root_device(&path)) {
+                (Ok(device), Some(root_device)) if device != root_device => {
+                    return Classified::Skipped;
+                }
+                (Err(error), _) => {
+                    self.progress.record_error(&path, &error);
+                    return Classified::Skipped;
+                }
+                _ => {}
+            }
+        }
+        Classified::Subdirectory(path)
+    }
+
+    /// Yield classifications through the native batch path on macOS, with
+    /// the portable enumerator retained for unsupported filesystems.
+    fn entries(
+        &self,
+        path: &Path,
+        mut visitor: impl FnMut(Classified),
+    ) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        if crate::macos_scan::visit(
+            path,
+            || self.cancelled(),
+            |entry| {
+                visitor(self.classify_native(path, entry));
+            },
+        )? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(path)? {
+            if self.cancelled() {
+                break;
+            }
+            match entry {
+                Ok(entry) => visitor(self.classify(&entry)),
+                Err(error) => self.progress.record_error(path, &error),
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn classify_native(
+        &self,
+        parent: &Path,
+        entry: crate::macos_scan::Entry<'_>,
+    ) -> Classified {
+        let name = entry.name.to_string_lossy();
+        if !self.options.include_hidden && name.starts_with('.') {
+            return Classified::Skipped;
+        }
+        let name: Box<str> = name.into_owned().into();
+        if let Some(meta) = entry.metadata {
+            if meta.kind == 2 {
+                return self.classify_directory(parent.join(entry.name), name);
+            }
+            // VREG and unfollowed VLNK both carry their own sizes in the
+            // batch. Link-heavy package stores avoid another lstat per link.
+            if meta.kind == 1 || (meta.kind == 5 && !self.options.follow_links)
+            {
+                let kind = if meta.kind == 5 {
+                    NodeKind::Symlink
+                } else {
+                    NodeKind::File
+                };
+                let size = if self.options.apparent_size {
+                    meta.apparent
+                } else {
+                    meta.allocated
+                };
+                let mut node = Node::entry(name, kind, size);
+                node.modified = meta.modified;
+                node.inode = (self.options.dedup_hardlinks
+                    && (self.options.follow_links || meta.links > 1))
+                    .then_some((meta.device, meta.inode));
+                return Classified::Entry(node);
+            }
+        }
+        // Symlinks, special files, and incomplete attribute records retain
+        // the portable semantics, including followed-link cycle detection.
+        let path = parent.join(entry.name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_symlink() => self.classify_symlink(&path, name),
+            Ok(meta) if meta.is_dir() => self.classify_directory(path, name),
+            Ok(meta) => {
+                self.leaf(name, kind_of(&meta, meta.file_type()), &meta)
+            }
             Err(error) => {
                 self.progress.record_error(&path, &error);
                 Classified::Skipped
@@ -354,12 +435,12 @@ impl WalkContext {
             return match fs::symlink_metadata(path) {
                 Ok(meta) => {
                     let size = measure(&meta, self.options.apparent_size);
-                    self.progress.count_file(size);
                     Classified::Entry(leaf_node(
                         name,
                         NodeKind::Symlink,
                         size,
                         &meta,
+                        self.options.dedup_hardlinks && multiple_links(&meta),
                     ))
                 }
                 Err(error) => {
@@ -386,7 +467,6 @@ impl WalkContext {
             {
                 return Classified::Skipped;
             }
-            self.progress.count_dir();
             return Classified::Subdirectory(path.to_path_buf());
         }
 
@@ -400,8 +480,14 @@ impl WalkContext {
         meta: &Metadata,
     ) -> Classified {
         let size = measure(meta, self.options.apparent_size);
-        self.progress.count_file(size);
-        Classified::Entry(leaf_node(name, kind, size, meta))
+        Classified::Entry(leaf_node(
+            name,
+            kind,
+            size,
+            meta,
+            self.options.dedup_hardlinks
+                && (self.options.follow_links || multiple_links(meta)),
+        ))
     }
 }
 
@@ -492,6 +578,9 @@ fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Node> {
     }
 
     let root_dir = Arc::new(PendingDir::new(root.to_path_buf(), None, 0));
+    #[cfg(target_os = "macos")]
+    scanner_pool()?.scope(|scope| walk(scope, &root_dir, context));
+    #[cfg(not(target_os = "macos"))]
     rayon::scope(|scope| walk(scope, &root_dir, context));
 
     let node = lock(&context.root).take();
@@ -501,43 +590,72 @@ fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Node> {
     Ok(finish_tree(node, &context.options))
 }
 
+/// APFS bulk reads saturate metadata throughput with a few workers. A
+/// bounded, reusable pool avoids oversubscribing the filesystem and leaves
+/// the global Rayon pool available for other work during a scan.
+#[cfg(target_os = "macos")]
+fn scanner_pool() -> io::Result<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<
+        Result<rayon::ThreadPool, rayon::ThreadPoolBuildError>,
+    > = OnceLock::new();
+    POOL.get_or_init(|| {
+        let available =
+            thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        let workers = std::env::var("DISKTREE_SCAN_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&value| value > 0)
+            .map_or_else(|| available.min(4), |value| value.min(64));
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .thread_name(|index| format!("disktree-io-{index}"))
+            .build()
+    })
+    .as_ref()
+    .map_err(|error| io::Error::other(error.to_string()))
+}
+
 /// Read one directory, spawn a task per subdirectory, then report completion.
 ///
 /// Flat tasks inside the scope: the worker stack never grows with tree depth.
 fn walk(scope: &Scope<'_>, dir: &Arc<PendingDir>, context: &Arc<WalkContext>) {
     let mut subdirs: Vec<Arc<PendingDir>> = Vec::new();
     let mut leaves: Vec<Node> = Vec::new();
+    let (mut files, mut dirs, mut bytes) = (0, 0, 0);
+    let mut batch = 0;
 
-    match fs::read_dir(&dir.path) {
-        Ok(entries) => {
-            for entry in entries {
-                if context.cancelled() {
-                    break;
-                }
-                match entry {
-                    Ok(entry) => match context.classify(&entry) {
-                        Classified::Subdirectory(path) => {
-                            let child = Arc::new(PendingDir::new(
-                                path,
-                                Some(Arc::clone(dir)),
-                                dir.depth + 1,
-                            ));
-                            subdirs.push(child);
-                        }
-                        Classified::Entry(node) => leaves.push(node),
-                        Classified::Skipped => {}
-                    },
-                    Err(error) => {
-                        context.progress.record_error(&dir.path, &error);
-                    }
-                }
+    let result = context.entries(&dir.path, |entry| {
+        match entry {
+            Classified::Subdirectory(path) => {
+                dirs += 1;
+                subdirs.push(Arc::new(PendingDir::new(
+                    path,
+                    Some(Arc::clone(dir)),
+                    dir.depth + 1,
+                )));
             }
+            Classified::Entry(node) => {
+                files += if node.is_dir() { node.files } else { 1 };
+                dirs += node.dirs;
+                bytes += node.bytes;
+                leaves.push(node);
+            }
+            Classified::Skipped => {}
         }
-        Err(error) => {
-            context.progress.record_error(&dir.path, &error);
-            dir.read_error.store(true, Ordering::Relaxed);
+        batch += 1;
+        if batch == 128 {
+            // Local batching avoids cache-line contention among workers.
+            context.progress.add(files, dirs, bytes);
+            (files, dirs, bytes) = (0, 0, 0);
+            batch = 0;
         }
+    });
+    if let Err(error) = result {
+        context.progress.record_error(&dir.path, &error);
+        dir.read_error.store(true, Ordering::Relaxed);
     }
+
+    context.progress.add(files, dirs, bytes);
 
     // A depth-limited scan still measures what is directly in the directory,
     // it just does not descend further.
@@ -612,9 +730,13 @@ fn leaf_node(
     kind: NodeKind,
     size: u64,
     meta: &Metadata,
+    track_identity: bool,
 ) -> Node {
     let mut node = Node::entry(name, kind, size);
-    node.inode = file_identity(meta);
+    // Ordinary files cannot collide unless symlink following is enabled.
+    // Keeping only hardlink candidates out of the global set saves O(files)
+    // hash entries on the overwhelmingly common single-link scan.
+    node.inode = track_identity.then(|| file_identity(meta)).flatten();
     node.modified = modified_seconds(meta);
     node
 }
@@ -667,6 +789,17 @@ fn device_of(meta: &Metadata) -> u64 {
 #[cfg(not(unix))]
 fn device_of(_meta: &Metadata) -> u64 {
     0
+}
+
+#[cfg(unix)]
+fn multiple_links(meta: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    meta.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn multiple_links(_meta: &Metadata) -> bool {
+    false
 }
 
 /// `(device, inode)`, or `None` where the platform does not expose them.
@@ -815,6 +948,49 @@ mod tests {
             },
         );
         assert_eq!(counted.bytes, 8192);
+    }
+
+    #[test]
+    fn single_link_files_skip_the_identity_set_until_links_are_followed() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        write(root, "file.bin", 1024);
+        let tree = scan_dir(root, &options());
+        assert!(child(&tree, "file.bin").inode.is_none());
+        std::os::unix::fs::symlink(root.join("file.bin"), root.join("alias"))
+            .expect("symlink");
+        let followed = scan_dir(
+            root,
+            &ScanOptions {
+                follow_links: true,
+                ..options()
+            },
+        );
+        assert_eq!(
+            followed.bytes, 1024,
+            "followed aliases are still charged once"
+        );
+        assert!(child(&followed, "file.bin").inode.is_some());
+    }
+
+    #[test]
+    fn progress_flushes_full_batches_and_the_final_partial_batch() {
+        let temp = TempDir::new().expect("tempdir");
+        for index in 0..259 {
+            write(temp.path(), &format!("file-{index}"), 7);
+        }
+        let handle = ScanHandle::spawn(temp.path().to_path_buf(), options());
+        loop {
+            if let Some(result) = handle.poll() {
+                let tree = result.expect("scan");
+                let progress = handle.progress.snapshot();
+                assert_eq!(tree.files, 259);
+                assert_eq!(progress.files, tree.files);
+                assert_eq!(progress.bytes, tree.bytes);
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]
