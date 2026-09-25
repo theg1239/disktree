@@ -5,8 +5,8 @@
 Find what is filling a disk, mark what should go, and remove it — with the
 volume's free space in view the whole time.
 
-disktree is a treemap for Omarchy and macOS. It scans your home directory by
-default, draws every directory as a nested mosaic sized by what it costs on disk,
+disktree is a treemap for Omarchy. It scans your home directory by default,
+draws every directory as a nested mosaic sized by what it really costs on disk,
 and lets you walk into it with the keyboard or the mouse. Mark as much as you
 like; nothing happens until you review the list and commit, and the permanent
 path always asks first.
@@ -16,8 +16,6 @@ Built with [GPUI](https://gpui-kit.com/) through
 Omarchy theme and behaves like the rest of the desktop.
 
 ## Install
-
-### Linux / Omarchy
 
 Download `disktree-*-x86_64-linux.tar.gz` from the
 [latest release](https://github.com/tobi/disktree/releases/latest), unpack
@@ -47,20 +45,13 @@ can drive (Vulkan).
 
 ### macOS
 
-With Rust 1.97 or newer and Xcode (including the Metal toolchain), run
-`make bundle` to build `target/release/Disktree.app`. `make install` copies it
-into `~/Applications`; `MAC_APPDIR=/Applications` chooses another destination.
-The app requires macOS 12 or newer and uses an ad-hoc signature by default.
-Set `CODESIGN_IDENTITY` when bundling with a Developer ID certificate.
+Requires macOS 12 or newer, Rust 1.97 or newer, and Xcode with the Metal
+toolchain. Run `make bundle` to build `target/release/Disktree.app`;
+`make install` copies it into `~/Applications`.
 
-The File menu provides folder selection (`⌘O`), Finder reveal (`⌘⇧R`),
-and rescan (`⌘R`). `⌘W` closes the window and `⌘Q` quits. Use `⌘` in place
-of `ctrl` for marking and interface zoom. The app follows system appearance
-and uses Finder Trash. Moving files to Trash frees space when it is emptied.
-
-Protected folders are counted as unreadable. To include them, use
-**File → Full Disk Access Settings…**, grant access to the bundled app,
-and reopen it.
+Use **File → Open Folder…** (`⌘O`) to choose a folder, and `⌘` instead of
+`ctrl` for marking and interface zoom. For protected folders, grant the app
+Full Disk Access through **File → Full Disk Access Settings…** and reopen it.
 
 ## Use
 
@@ -167,15 +158,11 @@ commits, `esc` goes back.
 ## What it measures
 
 - **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
-  allocated space reported by the filesystem. Apparent size (what
+  space that actually comes back when a file is deleted. Apparent size (what
   `ls -l` shows) is one toggle away.
 - **Hardlinks once.** Two names for one inode cost one file.
 - **Hidden entries included**, because `~/.cache` is often the biggest thing in
   a home directory. Symlinks are not followed.
-
-The scanned total covers readable files under the chosen root; disk capacity
-covers the entire filesystem. APFS clones and snapshots can share or retain
-blocks, so allocated bytes do not guarantee how much space removal will free.
 
 The scan follows [dust](https://github.com/bootandy/dust)'s approach: one rayon
 scope per root, a completion counter per directory so no directory is built
@@ -187,8 +174,7 @@ and removes duplicate hardlinks.
 Click `/` (or any directory above the scanned root) in the trail, press
 `g`, run `disktree --disk`, or use the launcher's *Scan the whole disk*
 action. `g` and `--disk` scan the disk your home directory lives on — `/`
-on Omarchy. On macOS it scans the writable APFS Data volume, excluding other
-mounted volumes and their firmlink aliases. `-X` crosses mount boundaries.
+on Omarchy.
 
 Widening is memoized: the tree already measured is handed to the wider walk
 and reused where it is reached, so going from `~` to `/` reads only what is
