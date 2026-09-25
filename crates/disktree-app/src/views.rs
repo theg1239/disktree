@@ -12,8 +12,8 @@ use disktree_core::tree::Metric;
 use gpui_kit::base::CheckboxState;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, DragMoveEvent, ElementId,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement, Rems, SharedString, Stateful,
+    FontFeatures, FontWeight, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement, Rems, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, Window, anchored, deferred, div,
     pattern_slash, px, relative,
 };
@@ -56,6 +56,28 @@ pub fn root(
         .debug_selector(|| "disktree-root".into())
         .track_focus(&app.focus)
         .key_context("Disktree")
+        .on_action(cx.listener(|this, _: &crate::platform::OpenFolder, _, cx| {
+            this.open_folder(cx);
+        }))
+        .on_action(cx.listener(|this, _: &crate::platform::Reveal, _, cx| {
+            let path = this.selected.as_deref()
+                .and_then(|crumbs| this.path_at(crumbs))
+                .unwrap_or_else(|| this.current_path());
+            cx.reveal_path(&path);
+        }))
+        .on_action(cx.listener(|this, _: &crate::platform::Rescan, _, cx| {
+            if !this.confirm_open && this.screen != Screen::Running {
+                this.start_scan(cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &crate::platform::ScanDisk, _, cx| {
+            if !this.confirm_open && this.screen != Screen::Running {
+                this.go_to_disk(cx);
+            }
+        }))
+        .on_action(cx.listener(|_, _: &crate::platform::CloseWindow, window, _| {
+            window.remove_window();
+        }))
         // The listener is the only place with a window in hand, so it is also
         // where the titlebar is kept in step with the directory on screen.
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -772,7 +794,10 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         .flex_shrink_0()
         .text_size(text::CAPTION)
         .text_color(theme.secondary)
-        .child(div().text_color(theme.foreground).child(human_bytes(bytes)))
+        .child(with_tooltip(
+            div().id("scan-size").text_color(theme.foreground).child(format!("{} scanned", human_bytes(bytes))),
+            "Readable files under the scan root. Apparent size measures file lengths; disk usage measures allocated blocks. Unreadable paths and snapshots are excluded.",
+        ))
         .child(format!(
             "· {} files · {} dirs",
             widgets::human_count(files),
@@ -1435,7 +1460,7 @@ fn disk_section(
             .flex()
             .flex_row()
             .gap(space::SM)
-            .child(widgets::eyebrow("Disk", cx))
+            .child(widgets::eyebrow("Disk capacity", cx))
             .child(
                 div()
                     .text_size(text::CAPTION)
@@ -1529,10 +1554,16 @@ fn disk_section(
                 .flex_row()
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
-                .child(format!("{} used", human_bytes(space_info.used())))
+                .child(format!("{} in use", human_bytes(space_info.used())))
                 .child(div().flex_1())
                 .child(format!("{} total", human_bytes(space_info.total))),
         )
+        .child(with_tooltip(
+            div().id("disk-scope").text_size(text::CAPTION)
+                .text_color(theme.secondary.opacity(0.7))
+                .child("Includes space outside the scanned folder"),
+            "Filesystem capacity includes other folders and unreadable data. APFS shares free space across volumes; snapshots and filesystem metadata also consume space.",
+        ))
         .children(
             (!app.marks.is_empty())
                 .then(|| review_button(app, reclaiming, theme, cx)),
@@ -1617,8 +1648,71 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         lane = lane.child(widgets::hint(keys, label, cx).flex_shrink_0());
     }
 
-    let mut row = div()
+    let zoom = if (app.view.scale - 1.0).abs() > 0.01 {
+        format!("{:.1}×", app.view.scale)
+    } else {
+        String::new()
+    };
+    let (label, detail) = if app.scan.is_some() {
+        ("scanning", human_bytes(app.progress.bytes))
+    } else {
+        (
+            "scanned",
+            app.scan_elapsed.map_or_else(String::new, |time| {
+                format!("{:.1} s", time.as_secs_f32())
+            }),
+        )
+    };
+    // Keep each field's geometry stable across digit, unit and scan-state
+    // changes. Tabular figures also stop the digits moving within each field.
+    let status = div()
+        .id("scan-status")
+        .debug_selector(|| "scan-status".into())
         .flex()
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .gap(space::SM)
+        .whitespace_nowrap()
+        .text_size(text::CAPTION)
+        .text_color(theme.secondary.opacity(0.7))
+        .font_features(FontFeatures(std::sync::Arc::new(vec![(
+            "tnum".into(),
+            1,
+        )])))
+        .child(div().w(size::SCAN_LABEL).flex_shrink_0().child(label))
+        .child(div().child("·"))
+        .child(
+            div()
+                .id("scan-count")
+                .debug_selector(|| "scan-count".into())
+                .w(size::SCAN_COUNT)
+                .flex_shrink_0()
+                .text_right()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(format!(
+                    "{} entries",
+                    widgets::human_count(app.progress.files)
+                )),
+        )
+        .child(div().child("·"))
+        .child(
+            div()
+                .id("scan-detail")
+                .debug_selector(|| "scan-detail".into())
+                .w(size::SCAN_DETAIL)
+                .flex_shrink_0()
+                .text_right()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(detail),
+        );
+    div()
+        .flex()
+        .flex_shrink_0()
         .flex_row()
         .items_center()
         .gap(space::LG)
@@ -1626,39 +1720,24 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         .py(space::XS)
         .border_t_1()
         .border_color(theme.divider())
-        .child(lane);
-    if (app.view.scale - 1.0).abs() > 0.01 {
-        row = row.child(
-            div()
-                .flex_shrink_0()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(format!("{:.1}\u{00d7}", app.view.scale)),
-        );
-    }
-    let scan = if app.scan.is_some() {
-        format!(
-            "scanning \u{00b7} {} entries \u{00b7} {}",
-            widgets::human_count(app.progress.files),
-            human_bytes(app.progress.bytes)
-        )
-    } else {
-        let elapsed = app.scan_elapsed.map_or_else(String::new, |time| {
-            format!(" \u{00b7} {:.1} s", time.as_secs_f32())
-        });
-        format!(
-            "scan {} entries{elapsed}",
-            widgets::human_count(app.progress.files)
-        )
-    };
-    row.child(widgets::hint("?", "all keys", cx).flex_shrink_0())
+        .child(lane)
         .child(
             div()
+                .w(size::ZOOM_STATUS)
                 .flex_shrink_0()
+                .text_right()
                 .text_size(text::CAPTION)
-                .text_color(theme.secondary.opacity(0.7))
-                .child(scan),
+                .text_color(theme.secondary)
+                .child(zoom),
         )
+        .child(
+            div()
+                .id("footer-help")
+                .debug_selector(|| "footer-help".into())
+                .flex_shrink_0()
+                .child(widgets::hint("?", "all keys", cx)),
+        )
+        .child(status)
 }
 
 /// What the viewport shows while the first scan is running.
@@ -2740,7 +2819,14 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
     // pointer if the pointer moved last, else the keyboard selection.
     let rows: [(&str, &str); 24] = [
         ("space / x", "Mark or unmark the tile you point at"),
-        ("ctrl-click", "Mark without moving the selection"),
+        (
+            if cfg!(target_os = "macos") {
+                "⌘-click"
+            } else {
+                "ctrl-click"
+            },
+            "Mark without moving the selection",
+        ),
         ("enter", "Open that directory, at any depth"),
         ("\u{232b} / esc", "Go up one directory"),
         (
@@ -2752,7 +2838,14 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
         ("shift-scroll", "Pan the magnified view"),
         ("[ / ]", "Draw fewer or more levels at once"),
         ("- / = / 0", "Magnify, shrink, or reset the view"),
-        ("ctrl = / - / 0", "Interface zoom"),
+        (
+            if cfg!(target_os = "macos") {
+                "⌘ = / - / 0"
+            } else {
+                "ctrl = / - / 0"
+            },
+            "Interface zoom",
+        ),
         (
             "/",
             "Filter by name: only matches keep their colour; enter shows only them",

@@ -8,6 +8,7 @@
 mod git;
 mod marks;
 mod palette;
+mod platform;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -64,7 +65,7 @@ fn main() -> Result<()> {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
-            gpui_omarchy::init(cx);
+            platform::init(cx);
             let options = args.options.clone();
             let root_for_app = root.clone();
             let window = cx
@@ -114,6 +115,7 @@ fn main() -> Result<()> {
             let _ = window.update(cx, |this, window, cx| {
                 let focus = this.focus.clone();
                 window.focus(&focus, cx);
+                platform::init_window(window, cx);
             });
             cx.activate(true);
         });

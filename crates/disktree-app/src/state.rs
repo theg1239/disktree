@@ -518,11 +518,37 @@ impl Disktree {
         app
     }
 
+    /// Use the native folder panel so a Finder-launched app needs no CLI.
+    pub fn open_folder(&self, cx: &Context<'_, Self>) {
+        if self.confirm_open || self.screen == Screen::Running {
+            return;
+        }
+        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Scan folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    if !this.confirm_open && this.screen != Screen::Running {
+                        this.set_root(path.canonicalize().unwrap_or(path), cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Scan a different root from scratch. Marks are kept; a mark outside
     /// the new root is shown as kept back, never removed.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<'_, Self>) {
         self.space = space_info(&root).ok();
         self.device = device_for(&root);
+        self.disk_root = volume_root_for(&root);
         self.root_path = root;
         self.screen = Screen::Explore;
         self.start_scan(cx);
@@ -572,8 +598,11 @@ impl Disktree {
         };
         if disk == self.root_path {
             self.go_to(Vec::new(), cx);
-        } else {
+        } else if self.root_path.starts_with(&disk) {
             self.widen_to(disk, cx);
+        } else {
+            // APFS exposes /Users through a firmlink to the Data volume.
+            self.set_root(disk, cx);
         }
     }
 
@@ -1369,12 +1398,14 @@ impl Disktree {
             }
         }
 
-        let Some(tiles) = self.layout().map(<[Tile]>::to_vec) else {
+        if self.layout().is_none() {
             return Mosaic {
                 view,
                 ..Mosaic::default()
             };
-        };
+        }
+        let tiles = &self.cache.as_ref().expect("layout populated").tiles;
+        let viewport = self.treemap_size.get();
 
         // Hue comes from the node's kind; lightness from its depth in this
         // view, so the first level always reads as the first level.
@@ -1382,7 +1413,16 @@ impl Disktree {
         let now = self.scanned_at;
         let mut decorations = Vec::with_capacity(tiles.len());
         let mut labels = Vec::new();
-        for tile in &tiles {
+        for tile in tiles {
+            let drawn = self.animated_rect(tile.rect);
+            let visible = view.project(drawn);
+            if visible.x + visible.w <= 0.0
+                || visible.y + visible.h <= 0.0
+                || visible.x >= viewport.width.as_f32()
+                || visible.y >= viewport.height.as_f32()
+            {
+                continue;
+            }
             let crumbs = tile.crumbs();
             let node = match &tile.kind {
                 TileKind::Node { crumbs } => self.node_at(crumbs),
@@ -1462,12 +1502,16 @@ impl Disktree {
             }
         }
 
-        labels.sort_by(|left, right| {
+        let by_area = |left: &Label, right: &Label| {
             let left_area = left.rect.w * left.rect.h;
             let right_area = right.rect.w * right.rect.h;
             right_area.total_cmp(&left_area)
-        });
-        labels.truncate(MAX_LABELS);
+        };
+        if labels.len() > MAX_LABELS {
+            labels.select_nth_unstable_by(MAX_LABELS, by_area);
+            labels.truncate(MAX_LABELS);
+        }
+        labels.sort_by(by_area);
 
         Mosaic {
             tiles: decorations,
@@ -1633,16 +1677,15 @@ impl Disktree {
 
     pub fn toggle_metric(&mut self, cx: &mut Context<'_, Self>) {
         self.options.metric = self.options.metric.toggled();
-        if let Some(tree) = &self.tree {
-            let mut tree = (**tree).clone();
-            disktree_core::tree::aggregate(&mut tree, self.options.metric);
-            self.tree = Some(Arc::new(tree));
-            let metric = self.options.metric;
-            self.marks.refresh(
-                &self.root_path,
-                self.tree.as_ref().unwrap(),
-                metric,
+        if let Some(tree) = &mut self.tree {
+            // Most metric changes own the tree exclusively. Clone only when
+            // an in-flight filter or widening scan still shares the snapshot.
+            disktree_core::tree::aggregate(
+                Arc::make_mut(tree),
+                self.options.metric,
             );
+            self.marks
+                .refresh(&self.root_path, tree, self.options.metric);
         }
         // Children are ordered by the metric, so every crumb moved.
         self.refresh_insights();
@@ -1960,8 +2003,14 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let control = event.keystroke.modifiers.control;
+        let control = event.keystroke.modifiers.control
+            || event.keystroke.modifiers.platform;
         let shift = event.keystroke.modifiers.shift;
+        // Modified commands belong to the native action/keybinding system;
+        // they must not become plain letters in search or review actions.
+        if control || event.keystroke.modifiers.alt {
+            return;
+        }
 
         // The alert dialog owns Enter and Escape while it is open; a key that
         // bubbles up to here must not also act on the screen behind it.

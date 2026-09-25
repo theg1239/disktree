@@ -135,7 +135,7 @@ pub fn plan(targets: &[Target], root: &Path) -> Plan {
 /// and removing them by hand breaks the system; pacman, paccache and
 /// `journalctl --vacuum` are the right tools. Refused even where
 /// permissions would allow it, and even inside them.
-const SYSTEM_TREES: [&str; 14] = [
+const SYSTEM_TREES: &[&str] = &[
     "/bin",
     "/boot",
     "/dev",
@@ -150,17 +150,40 @@ const SYSTEM_TREES: [&str; 14] = [
     "/usr",
     "/var/lib",
     "/efi",
+    #[cfg(target_os = "macos")]
+    "/system",
+    #[cfg(target_os = "macos")]
+    "/library",
+    #[cfg(target_os = "macos")]
+    "/private/etc",
+    #[cfg(target_os = "macos")]
+    "/private/var/db",
+    #[cfg(target_os = "macos")]
+    "/private/var/root",
+    #[cfg(target_os = "macos")]
+    "/private/var/run",
+    #[cfg(target_os = "macos")]
+    "/private/var/vm",
 ];
 
 /// The system tree `path` is in, if any. The home directory is never
 /// system, wherever it lives.
 fn system_tree(path: &Path, home: Option<&Path>) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    let (path, home) = (
+        crate::macos::guard_path(path),
+        home.map(crate::macos::guard_path),
+    );
+    #[cfg(target_os = "macos")]
+    let (path, home) = (path.as_path(), home.as_deref());
     if home.is_some_and(|home| path.starts_with(normalize(home))) {
         return None;
     }
     SYSTEM_TREES
         .iter()
-        .find(|tree| path.starts_with(tree))
+        .find(|tree| {
+            path.starts_with(tree) || Path::new(tree).starts_with(path)
+        })
         .copied()
 }
 
@@ -173,6 +196,16 @@ fn refuse(path: &Path, root: &Path, home: Option<&Path>) -> Option<String> {
     }
     if home.is_some_and(|home| path == normalize(home)) {
         return Some("the home directory cannot be removed".into());
+    }
+    #[cfg(target_os = "macos")]
+    if home.is_some_and(|home| {
+        crate::macos::guard_path(home)
+            .starts_with(crate::macos::guard_path(path))
+    }) {
+        return Some(
+            "the home directory or a directory containing it cannot be removed"
+                .into(),
+        );
     }
     if !path.starts_with(root) {
         return Some("outside the scanned root".into());
@@ -250,6 +283,9 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// Which tool, if any, moves files to the desktop trash.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TrashBackend {
+    /// Finder's recoverable Trash via Foundation.
+    #[cfg(target_os = "macos")]
+    Finder,
     /// `trash-put` from trash-cli.
     TrashPut,
     /// `gio trash`, present anywhere `GLib` is installed.
@@ -264,6 +300,8 @@ pub enum TrashBackend {
 impl TrashBackend {
     pub const fn is_available(self) -> bool {
         match self {
+            #[cfg(target_os = "macos")]
+            Self::Finder => true,
             Self::TrashPut | Self::Gio | Self::XdgHome => true,
             Self::Unavailable => false,
         }
@@ -271,6 +309,8 @@ impl TrashBackend {
 
     pub const fn label(self) -> &'static str {
         match self {
+            #[cfg(target_os = "macos")]
+            Self::Finder => "Finder Trash",
             Self::TrashPut => "trash-put",
             Self::Gio => "gio trash",
             Self::XdgHome => "XDG trash",
@@ -280,6 +320,10 @@ impl TrashBackend {
 
     pub const fn detail(self) -> &'static str {
         match self {
+            #[cfg(target_os = "macos")]
+            Self::Finder => {
+                "recoverable in Finder; space is freed after emptying Trash"
+            }
             Self::TrashPut => {
                 "uses trash-cli, the same trash as your file manager"
             }
@@ -295,6 +339,13 @@ impl TrashBackend {
 }
 
 /// Detect the best available trash backend for this machine.
+#[cfg(target_os = "macos")]
+pub const fn detect_trash_backend() -> TrashBackend {
+    TrashBackend::Finder
+}
+
+/// Detect Linux desktop tools only on platforms that use them.
+#[cfg(not(target_os = "macos"))]
 pub fn detect_trash_backend() -> TrashBackend {
     if which("trash-put") {
         TrashBackend::TrashPut
@@ -307,6 +358,7 @@ pub fn detect_trash_backend() -> TrashBackend {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn which(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
@@ -444,6 +496,11 @@ fn run(
 pub fn remove_permanently(path: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if meta.is_dir() {
+        if is_mount_point(path) || crate::space::mounts_below(path)? {
+            return Err(io::Error::other(
+                "contains a mounted volume; unmount it before removing this directory",
+            ));
+        }
         fs::remove_dir_all(path)
     } else {
         fs::remove_file(path)
@@ -453,6 +510,8 @@ pub fn remove_permanently(path: &Path) -> io::Result<()> {
 /// Move one path to the desktop trash.
 pub fn move_to_trash(path: &Path, backend: TrashBackend) -> io::Result<()> {
     match backend {
+        #[cfg(target_os = "macos")]
+        TrashBackend::Finder => crate::macos::trash(path).map(|_| ()),
         TrashBackend::TrashPut => run_tool(Path::new("trash-put"), &[], path),
         TrashBackend::Gio => run_tool(Path::new("gio"), &["trash"], path),
         TrashBackend::XdgHome => trash_via_xdg(path),
@@ -872,12 +931,43 @@ mod tests {
         assert!(error.to_string().contains("no trash here"), "{error}");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_and_home_aliases_are_protected() {
+        let home = Path::new("/Users/me");
+        for path in [
+            "/System/Library",
+            "/Library/Preferences",
+            "/private/etc",
+            "/System/Volumes/Data/Library",
+            "/System/Volumes/Data/Users/me",
+            "/System/Volumes/Data/Users",
+            "/users/ME",
+        ] {
+            assert!(
+                refuse(Path::new(path), Path::new("/"), Some(home)).is_some(),
+                "{path}"
+            );
+        }
+        assert!(
+            refuse(
+                Path::new("/System/Volumes/Data/Users/me/Library/Caches"),
+                Path::new("/System/Volumes/Data"),
+                Some(home)
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn detection_prefers_a_tool_this_machine_has() {
         let backend = detect_trash_backend();
+        #[cfg(not(target_os = "macos"))]
         if which("trash-put") {
             assert_eq!(backend, TrashBackend::TrashPut);
         }
+        #[cfg(target_os = "macos")]
+        assert_eq!(backend, TrashBackend::Finder);
         assert!(backend.is_available());
     }
 

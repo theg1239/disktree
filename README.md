@@ -43,6 +43,16 @@ removes exactly what was installed.
 You need Rust 1.97 or newer and a Wayland or X11 session with a GPU that GPUI
 can drive (Vulkan).
 
+### macOS
+
+Requires macOS 12 or newer, Rust 1.97 or newer, and Xcode with the Metal
+toolchain. Run `make bundle` to build `target/release/Disktree.app`;
+`make install` copies it into `~/Applications`.
+
+Use **File → Open Folder…** (`⌘O`) to choose a folder, and `⌘` instead of
+`ctrl` for marking and interface zoom. For protected folders, grant the app
+Full Disk Access through **File → Full Disk Access Settings…** and reopen it.
+
 ## Use
 
 ```sh
