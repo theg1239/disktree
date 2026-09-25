@@ -1280,6 +1280,12 @@ impl Disktree {
         self.toggle_mark(&crumbs, cx);
     }
 
+    /// Mark or unmark the node at `crumbs`.
+    ///
+    /// A mark covers everything beneath it, since removing a directory takes
+    /// its contents with it: marking a directory absorbs the marks already
+    /// inside it, and a path inside a marked directory cannot be marked or
+    /// kept on its own — it says which mark it goes with instead.
     pub fn toggle_mark(
         &mut self,
         crumbs: &[usize],
@@ -1288,32 +1294,59 @@ impl Disktree {
         let Some(target) = self.target_at(crumbs) else {
             return;
         };
-        let marked_now = self.marks.toggle(target);
         self.notice = None;
-        if !marked_now {
-            cx.notify();
-            return;
-        }
-        // A mark inside something already marked is redundant, and saying so
-        // now is friendlier than showing it as redundant on the review screen.
-        let marked = self.marks.items().last().cloned();
-        if let Some(marked) = marked
-            && let Some(parent) = self.marks.items().iter().find(|item| {
-                item.path != marked.path && marked.path.starts_with(&item.path)
-            })
+        if !self.marks.contains(&target.path)
+            && let Some(ancestor) = self.marked_ancestor(&target.path)
         {
-            let parent = parent.path.clone();
-            self.space_baseline = self.space_baseline.or(self.space);
             self.notice = Some((
                 format!(
-                    "{} is already inside the marked {}",
-                    display_path(&marked.path, self.home.as_deref()),
-                    display_path(&parent, self.home.as_deref())
+                    "{} goes with the marked {}; unmark that to keep it",
+                    display_path(&target.path, self.home.as_deref()),
+                    display_path(&ancestor, self.home.as_deref())
                 ),
                 Status::Warning,
             ));
+            cx.notify();
+            return;
+        }
+        let path = target.path.clone();
+        if self.marks.toggle(target) {
+            self.space_baseline = self.space_baseline.or(self.space);
+            let inside: Vec<PathBuf> = self
+                .marks
+                .items()
+                .iter()
+                .filter(|item| {
+                    item.path != path && item.path.starts_with(&path)
+                })
+                .map(|item| item.path.clone())
+                .collect();
+            for inner in &inside {
+                self.marks.remove(inner);
+            }
+            if !inside.is_empty() {
+                self.notice = Some((
+                    format!(
+                        "{} now covers {} mark{} inside it",
+                        display_path(&path, self.home.as_deref()),
+                        inside.len(),
+                        if inside.len() == 1 { "" } else { "s" }
+                    ),
+                    Status::Neutral,
+                ));
+            }
         }
         cx.notify();
+    }
+
+    /// The marked directory `path` is inside, if any; never `path` itself.
+    pub fn marked_ancestor(&self, path: &Path) -> Option<PathBuf> {
+        self.marks
+            .items()
+            .iter()
+            .filter(|item| item.path != path && path.starts_with(&item.path))
+            .map(|item| item.path.clone())
+            .min_by_key(|ancestor| ancestor.as_os_str().len())
     }
 
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
@@ -1364,14 +1397,6 @@ impl Disktree {
                 marked.insert(crumbs);
             }
         }
-        let mut covered: FxHashSet<Vec<usize>> = FxHashSet::default();
-        for crumbs in &marked {
-            if (1..crumbs.len())
-                .any(|length| marked.contains(&crumbs[..length]))
-            {
-                covered.insert(crumbs.clone());
-            }
-        }
 
         if self.layout().is_none() {
             return Mosaic {
@@ -1417,7 +1442,11 @@ impl Disktree {
                 Some(None) => Filtered::Out,
             };
             let is_marked = marked.contains(crumbs);
-            let is_covered = covered.contains(crumbs);
+            // Everything inside a marked directory goes with it, so it is
+            // drawn marked too.
+            let is_covered = !marked.is_empty()
+                && (1..crumbs.len())
+                    .any(|length| marked.contains(&crumbs[..length]));
             decorations.push(TileDeco {
                 rect: self.animated_rect(tile.rect),
                 depth: tile.depth,

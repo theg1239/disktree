@@ -1,10 +1,10 @@
 name: Release
 
 # Push a tag like v0.9.0 to build and publish a release. The tag must match
-# the workspace version in Cargo.toml.
+# the workspace version in Cargo.toml. macOS prereleases are published separately.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "!v*-macos.*"]
   workflow_dispatch:
     inputs:
       tag:

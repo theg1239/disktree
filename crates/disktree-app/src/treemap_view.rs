@@ -151,7 +151,6 @@ struct Colors {
     selected_border: Hsla,
     marked_border: Hsla,
     marked_label: Hsla,
-    covered_border: Hsla,
     warning: Hsla,
     hatch: Hsla,
     /// Fills per category, then per depth.
@@ -203,7 +202,6 @@ impl Colors {
             selected_border: palette::highlight(theme),
             marked_border: theme.danger,
             marked_label: theme.danger,
-            covered_border: theme.danger.opacity(0.4),
             warning: theme.warning,
             hatch: palette::hatch(theme),
             fill: CATEGORIES
@@ -229,7 +227,8 @@ impl Colors {
     }
 
     fn fill(&self, tile: &TileDeco) -> Hsla {
-        if tile.marked {
+        // Marked, or inside something marked: it all goes together.
+        if tile.marked || tile.covered {
             return self.marked_fill;
         }
         let depth = (tile.depth as usize).min(DEPTHS - 1);
@@ -287,7 +286,10 @@ fn paint_tiles(
         // "can it go", the colour "what is it". Everything inside a
         // reclaimable directory is reclaimable too, so only the outermost
         // one needs painting; its children repaint their own fill and hatch.
-        if tile.reclaimable && !tile.marked && tile.filtered == Filtered::Shown
+        if tile.reclaimable
+            && !tile.marked
+            && !tile.covered
+            && tile.filtered == Filtered::Shown
         {
             window.paint_quad(quad(
                 quad_bounds,
@@ -348,8 +350,6 @@ fn paint_tiles(
             Some((2, 1.0, colors.hover_border))
         } else if tile.marked {
             Some((1, 2.0, colors.marked_border))
-        } else if tile.covered {
-            Some((0, 1.0, colors.covered_border))
         } else {
             None
         };

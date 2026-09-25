@@ -1196,3 +1196,67 @@ fn footer_fields_stay_put_across_digits_units_zoom_and_completion(
         );
     }
 }
+
+#[gpui_kit::test]
+fn marking_a_directory_marks_everything_inside_it(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let crumbs = |view: &Entity<Disktree>, cx: &mut Window, rel: &str| {
+        let path = temp.path().join(rel);
+        read(view, cx, |app| app.crumbs_for_path(&path)).expect(rel)
+    };
+    let junk = crumbs(&view, cx, "junk");
+    let deeper = crumbs(&view, cx, "junk/deeper");
+
+    // Marked inside first, then the directory around it: one mark remains,
+    // and it covers the inner one.
+    update(&view, cx, |app, cx| app.toggle_mark(&deeper, cx));
+    update(&view, cx, |app, cx| app.toggle_mark(&junk, cx));
+    let marks = read(&view, cx, |app| {
+        app.marks
+            .items()
+            .iter()
+            .map(|item| item.path.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        marks,
+        vec![temp.path().join("junk")],
+        "the inner mark is absorbed"
+    );
+
+    // Every tile inside it is drawn marked: the ones below the mark are
+    // "covered", which paints the same fill and label.
+    let mosaic = update(&view, cx, |app, _| app.prepare());
+    let (inside, covered) = update(&view, cx, |app, _| {
+        let tiles = app.layout().map(<[Tile]>::to_vec).unwrap_or_default();
+        let inside: Vec<bool> = tiles
+            .iter()
+            .zip(&mosaic.tiles)
+            .filter(|(tile, _)| {
+                tile.crumbs().starts_with(&junk) && tile.crumbs() != junk
+            })
+            .map(|(_, deco)| deco.covered)
+            .collect();
+        (inside.len(), inside.iter().all(|covered| *covered))
+    });
+    assert!(inside >= 2, "blob.bin and deeper are drawn inside junk");
+    assert!(covered, "every tile inside junk goes with it");
+
+    // Marking something inside it is refused, and says why.
+    update(&view, cx, |app, cx| app.toggle_mark(&deeper, cx));
+    let (count, notice) = read(&view, cx, |app| {
+        (
+            app.marks.len(),
+            app.notice.as_ref().map(|(text, _)| text.clone()),
+        )
+    });
+    assert_eq!(count, 1);
+    assert!(notice.is_some_and(|text| text.contains("goes with the marked")));
+
+    // Unmarking the directory unmarks everything.
+    update(&view, cx, |app, cx| app.toggle_mark(&junk, cx));
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+}

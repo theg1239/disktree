@@ -1082,8 +1082,8 @@ fn selection_section(
     }
     if let Some(ancestor) = &covered_by {
         chips.push(widgets::chip(
-            format!("Inside marked {ancestor}"),
-            theme.secondary,
+            format!("Goes with {ancestor}"),
+            theme.danger,
             cx,
         ));
     }
@@ -1116,23 +1116,34 @@ fn selection_section(
                     })),
             );
         }
+        // Inside a marked directory there is nothing to mark on its own: it
+        // goes with that directory, so the button offers to keep it by
+        // unmarking the directory instead.
+        let ancestor =
+            path.as_deref().and_then(|path| app.marked_ancestor(path));
         let crumbs = target;
-        let mark = button(
-            "mark",
-            if marked { "Unmark" } else { "Mark for removal" },
-            ButtonVariant::Primary,
-            cx,
-        )
-        .tab_stop(false)
-        .flex_1()
-        .justify_center()
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.toggle_mark(&crumbs.clone(), cx);
-            window.focus(&this.focus, cx);
-        }));
-        actions = actions.child(if marked {
-            mark
-        } else {
+        let label = match &ancestor {
+            Some(ancestor) if !marked => {
+                format!("Unmark {}", short_name(ancestor))
+            }
+            _ if marked => "Unmark".to_string(),
+            _ => "Mark for removal".to_string(),
+        };
+        let mark = button("mark", label, ButtonVariant::Primary, cx)
+            .tab_stop(false)
+            .flex_1()
+            .justify_center()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(ancestor) = ancestor.as_deref().filter(|_| !marked)
+                {
+                    this.unmark(ancestor, cx);
+                } else {
+                    this.toggle_mark(&crumbs.clone(), cx);
+                }
+                window.focus(&this.focus, cx);
+            }));
+        let filled = !marked && covered_by.is_none();
+        actions = actions.child(if filled {
             let on = palette::on_highlight(theme);
             mark.bg(highlight)
                 .border_color(highlight)
@@ -1141,6 +1152,8 @@ fn selection_section(
                 .hover(move |style| {
                     style.bg(highlight.opacity(0.85)).border_color(highlight)
                 })
+        } else {
+            mark
         });
     }
 

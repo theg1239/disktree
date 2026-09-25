@@ -111,10 +111,13 @@ machine; see `crates/disktree-core/src/classify.rs`.
 ### Marking
 
 Space, X, Enter and the arrows act on the tile under the mouse if the mouse
-moved last, and on the keyboard selection after you use an arrow or Tab. The
-tile you mark is hatched in the danger colour. Marking is reversible — press it
-again — and a path inside a marked directory is shown as going with it, so the
-saving is never counted twice.
+moved last, and on the keyboard selection after you use an arrow or Tab.
+
+A marked tile takes the danger colour, and so does everything inside it:
+removing a directory takes its contents with it. Marking a directory absorbs
+any marks already inside it, and something inside a marked directory cannot be
+marked or kept on its own; its panel offers to unmark the directory instead.
+Marking is reversible — press it again — and the saving is never counted twice.
 
 ### Zooming and going in
 
