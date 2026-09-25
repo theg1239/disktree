@@ -1,10 +1,11 @@
 name: Release
 
-# Push a tag like v0.9.0 to build and publish a release. The tag must match
-# the workspace version in Cargo.toml.
+# Release tags must match the workspace version in Cargo.toml.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
   workflow_dispatch:
     inputs:
       tag:
@@ -12,33 +13,57 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: Build and publish
-    # The oldest supported runner: its glibc is what the binary needs at
-    # least, so building here runs on the most systems.
+  version:
+    name: Validate version
     runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Version
         id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="$RELEASE_TAG"
+          # PRs exercise the build without requiring or publishing a tag.
+          if [ "$EVENT_NAME" = pull_request ]; then
+            tag="v$version"
+          fi
           if [ "$tag" != "v$version" ]; then
             echo "tag $tag does not match Cargo.toml version $version" >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Build Linux
+    needs: version
+    # Preserve the oldest supported runner and its glibc baseline.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit }}
 
       - name: System libraries
         run: |
@@ -61,28 +86,109 @@ jobs:
         run: cargo build --release --locked -p disktree-app
 
       - name: Package
-        id: package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          name="disktree-${{ steps.version.outputs.version }}-x86_64-linux"
+          name="disktree-$VERSION-x86_64-linux"
           mkdir -p "dist/$name"
           cp target/release/disktree "dist/$name/"
           strip "dist/$name/disktree"
           cp packaging/install.sh packaging/disktree.desktop.in \
              assets/disktree.svg README.md LICENSE "dist/$name/"
-          echo "${{ steps.version.outputs.version }}" > "dist/$name/VERSION"
+          echo "$VERSION" > "dist/$name/VERSION"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      CARGO_BUILD_FLAGS: --locked
+      # Ad-hoc signing needs no Apple account, certificate, or secrets.
+      CODESIGN_IDENTITY: "-"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo xtask test
+
+      - name: Build
+        run: make bundle
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          name="disktree-$VERSION-$ARCH-macos"
+          codesign --verify --deep --strict target/release/Disktree.app
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            target/release/Disktree.app "dist/$name.zip"
+          (cd dist && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [version, linux, macos]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<'EOF'
+          macOS downloads have ad-hoc signatures and are not Apple-notarized.
+          macOS may require approval in System Settings → Privacy & Security.
+          EOF
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+            gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" \
-              --title "disktree ${TAG#v}" --generate-notes
+            gh release create "$TAG" dist/* --verify-tag \
+              --title "disktree ${TAG#v}" --generate-notes --notes-file "$notes"
           fi
