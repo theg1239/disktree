@@ -20,6 +20,10 @@ env:
 jobs:
   release:
     name: Build and publish
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     # The oldest supported runner: its glibc is what the binary needs at
     # least, so building here runs on the most systems.
     runs-on: ubuntu-22.04
@@ -39,6 +43,7 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: System libraries
         run: |
@@ -77,6 +82,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
         run: |
@@ -86,3 +92,63 @@ jobs:
             gh release create "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" \
               --title "disktree ${TAG#v}" --generate-notes
           fi
+
+  macos:
+    name: Build and publish macOS (${{ matrix.arch }})
+    # Linux creates the release; these jobs only attach their own archives.
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      CARGO_BUILD_FLAGS: --locked
+      # Ad-hoc signing requires no Apple credentials or notarization.
+      CODESIGN_IDENTITY: "-"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo xtask test
+
+      - name: Build
+        run: make bundle
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          name="disktree-$VERSION-$ARCH-macos"
+          codesign --verify --deep --strict target/release/Disktree.app
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            target/release/Disktree.app "dist/$name.zip"
+          (cd dist && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+          echo "archive=dist/$name.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          gh release upload "$TAG" \
+            "$ARCHIVE#macOS (ad-hoc signed, not notarized)" \
+            "$ARCHIVE.sha256" --clobber
