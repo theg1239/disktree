@@ -72,6 +72,13 @@ pub fn init(cx: &mut App) {
     }
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "the macOS variant installs a non-const native appearance observer"
+    )
+)]
 pub fn init_window(window: &Window, _cx: &mut App) {
     #[cfg(target_os = "macos")]
     window

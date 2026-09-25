@@ -20,7 +20,13 @@ appearance. Linux follows the Omarchy theme.
 
 ## Install on macOS
 
-Build on a Mac with Xcode (including its Metal toolchain) and rustup:
+Download the Apple Silicon app from [GitHub Releases](https://github.com/theg1239/disktree/releases).
+The macOS prerelease is Developer ID signed, notarized by Apple, and includes
+a stapled ticket for offline verification. Extract the ZIP and move
+Disktree.app into Applications.
+
+To build from source, use a Mac with Xcode (including its Metal toolchain)
+and rustup:
 
 ```sh
 git clone --branch macos-support https://github.com/theg1239/disktree
@@ -37,10 +43,12 @@ removes the app from that destination. No Linux desktop packages are needed.
 
 The deployment target is macOS 12.0. Apple Silicon and Intel builds are
 configured in the **macOS Release** workflow; its downloadable ZIP artifacts
-preserve the app's executable permissions. The local app and CI artifacts are
-not Developer ID notarized. A distribution build can set `CODESIGN_IDENTITY`
-when running `packaging/macos/bundle.sh`; notarization requires the developer's
-Apple credentials and is a separate step.
+preserve the app's executable permissions. Source builds and CI artifacts use
+ad-hoc signatures by default; the published macOS release is separately
+Developer ID signed and notarized. Set `CODESIGN_IDENTITY` when running
+`packaging/macos/bundle.sh` to create a distribution signature, then submit
+with `asc notarization submit`, staple the accepted ticket, and re-create
+the release ZIP.
 
 Open **File → Open Folder…** (`⌘O`) to choose a folder. **File → Reveal in
 Finder** (`⌘⇧R`) reveals the selection, `⌘R` rescans, `⌘W` closes the window,
