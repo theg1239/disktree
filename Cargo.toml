@@ -7,7 +7,7 @@ version = "0.9.1"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/theg1239/disktree"
+repository = "https://github.com/tobi/disktree"
 
 [workspace.dependencies]
 disktree-core = { path = "crates/disktree-core" }
@@ -84,10 +84,3 @@ overflow-checks = true
 # gated on debug_assertions; enable it for the host proc-macro only.
 [profile.release.package.gpui-pre-macros]
 debug-assertions = true
-strip = "none"
-
-# macOS 27 rejects proc-macro dylibs misaligned by LLVM's debug stripper.
-# Keep host build artifacts intact; runtime release optimizations stay enabled.
-# https://github.com/rust-lang/rust/issues/157750
-[profile.release.build-override]
-strip = "none"

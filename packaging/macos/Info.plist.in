@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
     <key>CFBundleName</key><string>Disktree</string>
     <key>CFBundleDisplayName</key><string>Disktree</string>
-    <key>CFBundleIdentifier</key><string>com.theg1239.disktree</string>
+    <key>CFBundleIdentifier</key><string>io.github.tobi.disktree</string>
     <key>CFBundleExecutable</key><string>disktree</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>@VERSION@</string>

@@ -14,11 +14,17 @@ ICONDIR ?= $(PREFIX)/share/icons/hicolor/scalable/apps
 
 MANIFEST = Cargo.toml
 CARGO ?= cargo
+CARGO_BUILD_FLAGS ?=
 TARGET = target/release/disktree
 BUNDLE ?= target/release/Disktree.app
 MAC_APPDIR ?= $(HOME)/Applications
 ifeq ($(shell uname -s),Darwin)
 export MACOSX_DEPLOYMENT_TARGET = 12.0
+# macOS 27 rejects host proc-macros misaligned by LLVM's debug stripper.
+# Scope the workaround to Mac builds; keep the workspace profiles unchanged.
+# https://github.com/rust-lang/rust/issues/157750
+CARGO_BUILD_FLAGS += --config 'profile.release.build-override.strip="none"'
+CARGO_BUILD_FLAGS += --config 'profile.release.package.gpui-pre-macros.strip="none"'
 endif
 ICON = assets/disktree.svg
 DESKTOP = packaging/disktree.desktop.in
@@ -43,7 +49,7 @@ help:
 # make file-target would only compare the binary against the manifest and
 # happily install a stale build.
 build:
-	$(CARGO) build --release
+	$(CARGO) build --release $(CARGO_BUILD_FLAGS)
 
 run: build
 	$(TARGET)

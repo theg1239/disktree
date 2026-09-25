@@ -5,69 +5,62 @@
 Find what is filling a disk, mark what should go, and remove it — with the
 volume's free space in view the whole time.
 
-This is a macOS fork of [tobi/disktree](https://github.com/tobi/disktree), retaining Rust, GPUI Kit, gpui-omarchy components, and the original treemap workflow. Linux/Omarchy support is retained.
-
-disktree is a native disk-usage treemap. It scans your home directory by default,
-draws every directory as a nested mosaic sized by what it really costs on disk,
+disktree is a treemap for Omarchy and macOS. It scans your home directory by
+default, draws every directory as a nested mosaic sized by what it costs on disk,
 and lets you walk into it with the keyboard or the mouse. Mark as much as you
 like; nothing happens until you review the list and commit, and the permanent
 path always asks first.
 
-Built with [GPUI Kit](https://gpui-kit.com/) and
-[gpui-omarchy](https://github.com/huacnlee/gpui-omarchy). macOS uses Metal,
-system typography, native window controls, and automatic light/dark
-appearance. Linux follows the Omarchy theme.
+Built with [GPUI](https://gpui-kit.com/) through
+[gpui-omarchy](https://github.com/huacnlee/gpui-omarchy), so it follows your
+Omarchy theme and behaves like the rest of the desktop.
 
-## Install on macOS
+## Install
 
-Download the Apple Silicon app from [GitHub Releases](https://github.com/theg1239/disktree/releases).
-The macOS prerelease is Developer ID signed, notarized by Apple, and includes
-a stapled ticket for offline verification. Extract the ZIP and move
-Disktree.app into Applications.
+### Linux / Omarchy
 
-To build from source, use a Mac with Xcode (including its Metal toolchain)
-and rustup:
+Download `disktree-*-x86_64-linux.tar.gz` from the
+[latest release](https://github.com/tobi/disktree/releases/latest), unpack
+it, and run `./install.sh` inside (or just copy `disktree` onto your
+`PATH`). Or build it:
 
 ```sh
-git clone --branch macos-support https://github.com/theg1239/disktree
+git clone https://github.com/tobi/disktree
 cd disktree
-make bundle
-open target/release/Disktree.app
-```
-
-The repository pins Rust 1.97.1. `make bundle` builds a release binary and a
-self-contained app, using the existing icon and a local ad-hoc signature.
-`make install` copies it to `~/Applications/Disktree.app`; use
-`MAC_APPDIR=/Applications` to choose another destination. `make uninstall`
-removes the app from that destination. No Linux desktop packages are needed.
-
-The deployment target is macOS 12.0. Apple Silicon and Intel builds are
-configured in the **macOS Release** workflow; its downloadable ZIP artifacts
-preserve the app's executable permissions. Source builds and CI artifacts use
-ad-hoc signatures by default; the published macOS release is separately
-Developer ID signed and notarized. Set `CODESIGN_IDENTITY` when running
-`packaging/macos/bundle.sh` to create a distribution signature, then submit
-with `asc notarization submit`, staple the accepted ticket, and re-create
-the release ZIP.
-
-Open **File → Open Folder…** (`⌘O`) to choose a folder. **File → Reveal in
-Finder** (`⌘⇧R`) reveals the selection, `⌘R` rescans, `⌘W` closes the window,
-and `⌘Q` quits. `⌘`-click marks a tile and `⌘ = / - / 0` changes interface zoom.
-The original keyboard and mouse controls below remain available.
-
-Protected folders can be reported as unreadable. To include them, use
-**File → Full Disk Access Settings…**, add the bundled Disktree app, enable
-access, and reopen the app. Scanning never requests root privileges.
-
-## Install on Linux / Omarchy
-
-```sh
 make install
 ```
 
-On Linux this installs the binary, desktop entry, and SVG icon under
-`~/.local`. `PREFIX=/usr/local` chooses a system-wide install. A Wayland/X11
-session and the original GPUI Vulkan/system libraries are required.
+`make install` builds a release binary and puts three things under `~/.local`
+(no root needed):
+
+- `~/.local/bin/disktree`
+- a desktop entry, so disktree is in the launcher and in a file manager's
+  **Open with** for a directory (it adds a handler; it never becomes the
+  default)
+- an icon
+
+`sudo make install PREFIX=/usr/local` installs system-wide; `make uninstall`
+removes exactly what was installed.
+
+You need Rust 1.97 or newer and a Wayland or X11 session with a GPU that GPUI
+can drive (Vulkan).
+
+### macOS
+
+With Rust 1.97 or newer and Xcode (including the Metal toolchain), run
+`make bundle` to build `target/release/Disktree.app`. `make install` copies it
+into `~/Applications`; `MAC_APPDIR=/Applications` chooses another destination.
+The app requires macOS 12 or newer and uses an ad-hoc signature by default.
+Set `CODESIGN_IDENTITY` when bundling with a Developer ID certificate.
+
+The File menu provides folder selection (`⌘O`), Finder reveal (`⌘⇧R`),
+and rescan (`⌘R`). `⌘W` closes the window and `⌘Q` quits. Use `⌘` in place
+of `ctrl` for marking and interface zoom. The app follows system appearance
+and uses Finder Trash. Moving files to Trash frees space when it is emptied.
+
+Protected folders are counted as unreadable. To include them, use
+**File → Full Disk Access Settings…**, grant access to the bundled app,
+and reopen it.
 
 ## Use
 
@@ -133,10 +126,9 @@ going in; `0` resets.
 `c` (or **Review…**) opens the list of everything marked. Unmark anything
 there, then choose:
 
-- **Move to trash** — the default. macOS uses Foundation’s native Finder
-  Trash, including the volume’s own trash on external disks. Linux uses
-  `trash-put`, `gio trash`, or the built-in XDG trash. Recoverable until
-  Trash is emptied, so it commits directly.
+- **Move to trash** — the default when a trash is available (`trash-put` from
+  trash-cli, then `gio trash`, then a built-in XDG trash). Recoverable until
+  the trash is emptied, so it commits directly.
 - **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
   that names what goes and how much comes back.
 
@@ -174,19 +166,16 @@ commits, `esc` goes back.
 
 ## What it measures
 
-- **Disk usage** by default: `st_blocks × 512`, allocated bytes reported
-  by the filesystem. APFS clones, compression, snapshots, and shared
-  container space mean this is not a guarantee of reclaimable space.
-  Apparent size (`ls -l`) is one toggle away.
-- **Hardlinked bytes once.** Both names remain in the file count.
+- **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
+  allocated space reported by the filesystem. Apparent size (what
+  `ls -l` shows) is one toggle away.
+- **Hardlinks once.** Two names for one inode cost one file.
 - **Hidden entries included**, because `~/.cache` is often the biggest thing in
   a home directory. Symlinks are not followed.
 
-The header's **scanned** total is the readable data beneath the chosen root.
-The **Disk capacity** panel reports filesystem-wide capacity; on APFS this
-reflects the shared storage pool. Other folders, unreadable paths, snapshots,
-and filesystem overhead explain why these totals need not match. Apparent
-file lengths also differ from allocated disk space.
+The scanned total covers readable files under the chosen root; disk capacity
+covers the entire filesystem. APFS clones and snapshots can share or retain
+blocks, so allocated bytes do not guarantee how much space removal will free.
 
 The scan follows [dust](https://github.com/bootandy/dust)'s approach: one rayon
 scope per root, a completion counter per directory so no directory is built
@@ -195,21 +184,11 @@ and removes duplicate hardlinks.
 
 ## The whole disk
 
-On macOS, `g` and `--disk` scan the home directory’s writable APFS Data
-volume (usually `/System/Volumes/Data`). The system’s read-only volume,
-snapshots mounted elsewhere, external disks, simulator volumes, network
-shares, and automounts are excluded. Mount exclusions include both visible
-firmlink paths and their Data-volume aliases, so a share inside a home
-folder is not traversed accidentally. Choosing another volume with `⌘O`
-updates the disk target and free-space meter. `-X` explicitly crosses mounts.
-Moving files to Trash does not free their blocks until Trash is emptied;
-APFS snapshots or clones may continue to retain blocks afterward. The final
-free-space change is measured from the volume, rather than assumed.
-
-On Linux, click `/` (or any directory above the scanned root) in the trail, press
+Click `/` (or any directory above the scanned root) in the trail, press
 `g`, run `disktree --disk`, or use the launcher's *Scan the whole disk*
 action. `g` and `--disk` scan the disk your home directory lives on — `/`
-on Omarchy.
+on Omarchy. On macOS it scans the writable APFS Data volume, excluding other
+mounted volumes and their firmlink aliases. `-X` crosses mount boundaries.
 
 Widening is memoized: the tree already measured is handed to the wider walk
 and reused where it is reached, so going from `~` to `/` reads only what is
@@ -236,10 +215,9 @@ tested:
 
 - only paths under the scanned root can be removed;
 - the filesystem root, the scanned root and your home directory are refused;
-- mount points are refused, and permanent deletion also refuses directories
-  containing mounted volumes; macOS protects aliases of the home directory
-  and directories containing it;
-- system trees (`/usr`, `/etc`, `/boot`, `/var/lib`, `/nix/store`, and macOS `/System`, system `/Library`, and protected `/private` trees) are
+- a mount point is refused, since removing it would reach into another
+  filesystem;
+- system trees (`/usr`, `/etc`, `/boot`, `/var/lib`, `/nix/store`, …) are
   refused even where permissions would allow it: packages own them, and
   pacman, paccache or `journalctl --vacuum` are the tools;
 - a symlink is unlinked, never followed;
@@ -285,26 +263,6 @@ The interface follows the
 every size is on one `rem` scale so interface zoom keeps its proportions,
 primary is reserved for what Enter does, and the only question the app asks is
 the one it cannot take back.
-
-## Performance
-
-On macOS, the scanner uses `getattrlistbulk` to fetch file metadata in 64 KiB
-batches, with reusable buffers and four filesystem workers. It avoids path
-allocation and individual `lstat` calls for entries with complete bulk
-metadata. Unsupported filesystems and incomplete records retain the portable
-fallback. Mount discovery uses `getfsstat(MNT_NOWAIT)` without a subprocess.
-`DISKTREE_SCAN_THREADS` can override the worker count for unusual storage.
-
-The port batches scan progress counters, tracks inode identities only for
-hardlink candidates (or when following links), and checks manifest names once
-per directory without cloning every filename. Frames borrow the cached tile
-layout, omit tiles outside the viewport, and select only the largest 150
-labels before sorting. Changing the size/files metric reuses the tree when
-no background task shares it.
-
-`cargo run --release -p disktree-core --example bench` measures classification
-on a generated 203,001-node tree. Pass a directory to measure complete scans.
-See [PERFORMANCE.md](PERFORMANCE.md) for the comparison and its limits.
 
 ## License
 
